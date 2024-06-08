@@ -57,7 +57,7 @@ makedepends=(
     'cargo'
     'python-installer'
     'python-wheel'
-    'nodejs>=18'
+    'nodejs>=20'
     'yarn'
     'mold'
 )
