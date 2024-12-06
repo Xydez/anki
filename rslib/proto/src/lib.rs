@@ -36,4 +36,3 @@ protobuf!(search, "search");
 protobuf!(stats, "stats");
 protobuf!(sync, "sync");
 protobuf!(tags, "tags");
-protobuf!(ankihub, "ankihub");
