@@ -1,0 +1,613 @@
+From 35e8f6d657a5795b8046c5246150c988a2c06ba3 Mon Sep 17 00:00:00 2001
+From: Johannes <thexydez@gmail.com>
+Date: Fri, 6 Dec 2024 20:21:54 +0100
+Subject: [PATCH] Remove bloat.
+
+---
+ ftl/core/preferences.ftl     |   4 -
+ ftl/core/sync.ftl            |   4 -
+ proto/anki/ankihub.proto     |  30 -------
+ pylib/anki/collection.py     |   6 --
+ qt/aqt/ankihub.py            | 157 -----------------------------------
+ qt/aqt/forms/preferences.ui  | 142 -------------------------------
+ qt/aqt/preferences.py        |  25 ------
+ qt/aqt/profiles.py           |  12 ---
+ rslib/proto/python.rs        |   1 -
+ rslib/proto/src/lib.rs       |   1 -
+ rslib/src/ankihub/mod.rs     |   5 --
+ rslib/src/backend/ankihub.rs |  34 --------
+ rslib/src/backend/mod.rs     |   1 -
+ rslib/src/lib.rs             |   1 -
+ 14 files changed, 423 deletions(-)
+ delete mode 100644 proto/anki/ankihub.proto
+ delete mode 100644 qt/aqt/ankihub.py
+ delete mode 100644 rslib/src/ankihub/mod.rs
+ delete mode 100644 rslib/src/backend/ankihub.rs
+
+diff --git a/ftl/core/preferences.ftl b/ftl/core/preferences.ftl
+index 69a9300a022..a7aecf50ac5 100644
+--- a/ftl/core/preferences.ftl
++++ b/ftl/core/preferences.ftl
+@@ -77,11 +77,7 @@ preferences-network-timeout = Network timeout
+ preferences-reset-window-sizes = Reset Window Sizes
+ preferences-reset-window-sizes-complete = Window sizes and locations have been reset.
+ preferences-shortcut-placeholder = Enter an unused shortcut key, or leave empty to disable.
+-preferences-third-party-services = Third-Party Services
+-preferences-ankihub-not-logged-in = Not currently logged in to AnkiHub.
+ preferences-ankiweb-intro = AnkiWeb is a free service that lets you keep your flashcard data in sync across your devices, and provides a way to recover the data if your device breaks or is lost.
+-preferences-ankihub-intro = AnkiHub provides collaborative deck editing and additional study tools. A paid subscription is required to access certain features.
+-preferences-third-party-description = Third-party services are unaffiliated with and not endorsed by Anki. Use of these services may require payment.
+ 
+ ## NO NEED TO TRANSLATE. This text is no longer used by Anki, and will be removed in the future.
+ 
+diff --git a/ftl/core/sync.ftl b/ftl/core/sync.ftl
+index 76293c87d67..7f50ddd7762 100644
+--- a/ftl/core/sync.ftl
++++ b/ftl/core/sync.ftl
+@@ -55,10 +55,6 @@ sync-upload-too-large =
+     size by removing any unwanted decks (optionally exporting them first), and
+     then using Check Database to shrink the file size down. ({ $details })
+ sync-sign-in = Sign in
+-sync-ankihub-dialog-heading = AnkiHub Login
+-sync-ankihub-username-label = Username or Email:
+-sync-ankihub-login-failed = Unable to log in to AnkiHub with the provided credentials.
+-sync-ankihub-addon-installation = AnkiHub Add-on Installation
+ 
+ ## Buttons
+ 
+diff --git a/proto/anki/ankihub.proto b/proto/anki/ankihub.proto
+deleted file mode 100644
+index bcbdc17782c..00000000000
+--- a/proto/anki/ankihub.proto
++++ /dev/null
+@@ -1,30 +0,0 @@
+-// Copyright: Ankitects Pty Ltd and contributors
+-// License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
+-
+-syntax = "proto3";
+-
+-option java_multiple_files = true;
+-
+-import "anki/generic.proto";
+-
+-package anki.ankihub;
+-
+-service AnkiHubService {}
+-
+-service BackendAnkiHubService {
+-  rpc AnkihubLogin(LoginRequest) returns (LoginResponse);
+-  rpc AnkihubLogout(LogoutRequest) returns (generic.Empty);
+-}
+-
+-message LoginResponse {
+-  string token = 1;
+-}
+-
+-message LoginRequest {
+-  string id = 1;
+-  string password = 2;
+-}
+-
+-message LogoutRequest {
+-  string token = 1;
+-}
+diff --git a/pylib/anki/collection.py b/pylib/anki/collection.py
+index 43e443eef7d..9b56cad0361 100644
+--- a/pylib/anki/collection.py
++++ b/pylib/anki/collection.py
+@@ -1156,12 +1156,6 @@ def media_sync_status(self) -> MediaSyncStatus:
+         "This will throw if the sync failed with an error."
+         return self._backend.media_sync_status()
+ 
+-    def ankihub_login(self, id: str, password: str) -> str:
+-        return self._backend.ankihub_login(id=id, password=password)
+-
+-    def ankihub_logout(self, token: str) -> None:
+-        self._backend.ankihub_logout(token=token)
+-
+     def get_preferences(self) -> Preferences:
+         return self._backend.get_preferences()
+ 
+diff --git a/qt/aqt/ankihub.py b/qt/aqt/ankihub.py
+deleted file mode 100644
+index 4d3b00c8a31..00000000000
+--- a/qt/aqt/ankihub.py
++++ /dev/null
+@@ -1,157 +0,0 @@
+-# Copyright: Ankitects Pty Ltd and contributors
+-# License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
+-
+-from __future__ import annotations
+-
+-import functools
+-from concurrent.futures import Future
+-from typing import Callable
+-
+-import aqt
+-import aqt.main
+-from aqt.addons import (
+-    AddonManager,
+-    DownloadLogEntry,
+-    install_or_update_addon,
+-    show_log_to_user,
+-)
+-from aqt.qt import (
+-    QDialog,
+-    QDialogButtonBox,
+-    QGridLayout,
+-    QLabel,
+-    QLineEdit,
+-    QPushButton,
+-    Qt,
+-    QVBoxLayout,
+-    QWidget,
+-    qconnect,
+-)
+-from aqt.utils import disable_help_button, showWarning, tr
+-
+-
+-def ankihub_login(
+-    mw: aqt.main.AnkiQt,
+-    on_success: Callable[[], None],
+-    username: str = "",
+-    password: str = "",
+-) -> None:
+-
+-    def on_future_done(fut: Future[str], username: str, password: str) -> None:
+-        try:
+-            token = fut.result()
+-        except Exception as exc:
+-            showWarning(str(exc))
+-            return
+-
+-        if not token:
+-            showWarning(tr.sync_ankihub_login_failed(), parent=mw)
+-            ankihub_login(mw, on_success, username, password)
+-            return
+-        mw.pm.set_ankihub_token(token)
+-        mw.pm.set_ankihub_username(username)
+-        install_ankihub_addon(mw, mw.addonManager)
+-        on_success()
+-
+-    def callback(username: str, password: str) -> None:
+-        if not username and not password:
+-            return
+-        if username and password:
+-            mw.taskman.with_progress(
+-                lambda: mw.col.ankihub_login(id=username, password=password),
+-                functools.partial(on_future_done, username=username, password=password),
+-                parent=mw,
+-            )
+-        else:
+-            ankihub_login(mw, on_success, username, password)
+-
+-    get_id_and_pass_from_user(mw, callback, username, password)
+-
+-
+-def ankihub_logout(
+-    mw: aqt.main.AnkiQt,
+-    on_success: Callable[[], None],
+-    token: str,
+-) -> None:
+-
+-    def logout() -> None:
+-        mw.pm.set_ankihub_username(None)
+-        mw.pm.set_ankihub_token(None)
+-        mw.col.ankihub_logout(token=token)
+-
+-    mw.taskman.with_progress(
+-        logout,
+-        # We don't need to wait for the response
+-        lambda _: on_success(),
+-        parent=mw,
+-    )
+-
+-
+-def get_id_and_pass_from_user(
+-    mw: aqt.main.AnkiQt,
+-    callback: Callable[[str, str], None],
+-    username: str = "",
+-    password: str = "",
+-) -> None:
+-    diag = QDialog(mw)
+-    diag.setWindowTitle("Anki")
+-    disable_help_button(diag)
+-    diag.setWindowModality(Qt.WindowModality.WindowModal)
+-    diag.setMinimumWidth(600)
+-    vbox = QVBoxLayout()
+-    info_label = QLabel(f"<h1>{tr.sync_ankihub_dialog_heading()}</h1>")
+-    info_label.setOpenExternalLinks(True)
+-    info_label.setWordWrap(True)
+-    vbox.addWidget(info_label)
+-    vbox.addSpacing(20)
+-    g = QGridLayout()
+-    l1 = QLabel(tr.sync_ankihub_username_label())
+-    g.addWidget(l1, 0, 0)
+-    user = QLineEdit()
+-    user.setText(username)
+-    g.addWidget(user, 0, 1)
+-    l2 = QLabel(tr.sync_password_label())
+-    g.addWidget(l2, 1, 0)
+-    passwd = QLineEdit()
+-    passwd.setText(password)
+-    passwd.setEchoMode(QLineEdit.EchoMode.Password)
+-    g.addWidget(passwd, 1, 1)
+-    vbox.addLayout(g)
+-
+-    vbox.addSpacing(20)
+-    bb = QDialogButtonBox()  # type: ignore
+-    sign_in_button = QPushButton(tr.sync_sign_in())
+-    sign_in_button.setAutoDefault(True)
+-    bb.addButton(
+-        QPushButton(tr.actions_cancel()),
+-        QDialogButtonBox.ButtonRole.RejectRole,
+-    )
+-    bb.addButton(
+-        sign_in_button,
+-        QDialogButtonBox.ButtonRole.AcceptRole,
+-    )
+-    qconnect(bb.accepted, diag.accept)
+-    qconnect(bb.rejected, diag.reject)
+-    vbox.addWidget(bb)
+-
+-    diag.setLayout(vbox)
+-    diag.adjustSize()
+-    diag.show()
+-    user.setFocus()
+-
+-    def on_finished(result: int) -> None:
+-        if result == QDialog.DialogCode.Rejected:
+-            callback("", "")
+-        else:
+-            callback(user.text().strip(), passwd.text())
+-
+-    qconnect(diag.finished, on_finished)
+-    diag.open()
+-
+-
+-def install_ankihub_addon(parent: QWidget, mgr: AddonManager) -> None:
+-    def on_done(log: list[DownloadLogEntry]) -> None:
+-        if log:
+-            show_log_to_user(parent, log, title=tr.sync_ankihub_addon_installation())
+-
+-    install_or_update_addon(parent, mgr, 1322529746, on_done)
+diff --git a/qt/aqt/forms/preferences.ui b/qt/aqt/forms/preferences.ui
+index 34de8c80e8a..a8c1e4d4e4f 100644
+--- a/qt/aqt/forms/preferences.ui
++++ b/qt/aqt/forms/preferences.ui
+@@ -837,19 +837,6 @@
+          </property>
+         </spacer>
+        </item>
+-       <item>
+-        <spacer name="verticalSpacer_2">
+-         <property name="orientation">
+-          <enum>Qt::Vertical</enum>
+-         </property>
+-         <property name="sizeHint" stdset="0">
+-          <size>
+-           <width>20</width>
+-           <height>40</height>
+-          </size>
+-         </property>
+-        </spacer>
+-       </item>
+        <item>
+         <layout class="QGridLayout" name="gridLayout_2">
+          <item row="0" column="1">
+@@ -1092,133 +1079,6 @@
+        </item>
+       </layout>
+      </widget>
+-     <widget class="QWidget" name="tab_3">
+-      <attribute name="title">
+-       <string>preferences_third_party_services</string>
+-      </attribute>
+-      <layout class="QVBoxLayout" name="verticalLayout_4">
+-       <property name="spacing">
+-        <number>12</number>
+-       </property>
+-       <property name="leftMargin">
+-        <number>12</number>
+-       </property>
+-       <property name="topMargin">
+-        <number>12</number>
+-       </property>
+-       <property name="rightMargin">
+-        <number>12</number>
+-       </property>
+-       <property name="bottomMargin">
+-        <number>12</number>
+-       </property>
+-       <item>
+-        <widget class="QLabel" name="label">
+-         <property name="sizePolicy">
+-          <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+-           <horstretch>0</horstretch>
+-           <verstretch>0</verstretch>
+-          </sizepolicy>
+-         </property>
+-         <property name="text">
+-          <string>preferences_third_party_description</string>
+-         </property>
+-        </widget>
+-       </item>
+-       <item>
+-        <spacer name="verticalSpacer">
+-         <property name="orientation">
+-          <enum>Qt::Vertical</enum>
+-         </property>
+-         <property name="sizeType">
+-          <enum>QSizePolicy::Maximum</enum>
+-         </property>
+-         <property name="sizeHint" stdset="0">
+-          <size>
+-           <width>20</width>
+-           <height>12</height>
+-          </size>
+-         </property>
+-        </spacer>
+-       </item>
+-       <item>
+-        <widget class="QGroupBox" name="groupBox_6">
+-         <property name="sizePolicy">
+-          <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+-           <horstretch>0</horstretch>
+-           <verstretch>0</verstretch>
+-          </sizepolicy>
+-         </property>
+-         <property name="title">
+-          <string notr="true">AnkiHub</string>
+-         </property>
+-         <layout class="QHBoxLayout" name="horizontalLayout">
+-          <item>
+-           <widget class="QLabel" name="syncAnkiHubUser">
+-            <property name="sizePolicy">
+-             <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+-              <horstretch>0</horstretch>
+-              <verstretch>0</verstretch>
+-             </sizepolicy>
+-            </property>
+-            <property name="text">
+-             <string/>
+-            </property>
+-            <property name="wordWrap">
+-             <bool>true</bool>
+-            </property>
+-           </widget>
+-          </item>
+-          <item>
+-           <widget class="QPushButton" name="syncAnkiHubLogout">
+-            <property name="sizePolicy">
+-             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+-              <horstretch>0</horstretch>
+-              <verstretch>0</verstretch>
+-             </sizepolicy>
+-            </property>
+-            <property name="text">
+-             <string>sync_log_out_button</string>
+-            </property>
+-            <property name="autoDefault">
+-             <bool>false</bool>
+-            </property>
+-           </widget>
+-          </item>
+-          <item>
+-           <widget class="QPushButton" name="syncAnkiHubLogin">
+-            <property name="sizePolicy">
+-             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+-              <horstretch>0</horstretch>
+-              <verstretch>0</verstretch>
+-             </sizepolicy>
+-            </property>
+-            <property name="text">
+-             <string>sync_log_in_button</string>
+-            </property>
+-            <property name="autoDefault">
+-             <bool>false</bool>
+-            </property>
+-           </widget>
+-          </item>
+-         </layout>
+-        </widget>
+-       </item>
+-       <item>
+-        <spacer name="verticalspacer_13">
+-         <property name="orientation">
+-          <enum>Qt::Vertical</enum>
+-         </property>
+-         <property name="sizeHint" stdset="0">
+-          <size>
+-           <width>40</width>
+-           <height>20</height>
+-          </size>
+-         </property>
+-        </spacer>
+-       </item>
+-      </layout>
+-     </widget>
+     </widget>
+    </item>
+    <item>
+@@ -1285,8 +1145,6 @@
+   <tabstop>weekly_backups</tabstop>
+   <tabstop>monthly_backups</tabstop>
+   <tabstop>tabWidget</tabstop>
+-  <tabstop>syncAnkiHubLogout</tabstop>
+-  <tabstop>syncAnkiHubLogin</tabstop>
+  </tabstops>
+  <resources/>
+  <connections>
+diff --git a/qt/aqt/preferences.py b/qt/aqt/preferences.py
+index 7befe4ca2d8..9d8db2b6764 100644
+--- a/qt/aqt/preferences.py
++++ b/qt/aqt/preferences.py
+@@ -14,7 +14,6 @@
+ from anki.collection import OpChanges
+ from anki.utils import is_mac
+ from aqt import AnkiQt
+-from aqt.ankihub import ankihub_login, ankihub_logout
+ from aqt.operations.collection import set_preferences
+ from aqt.profiles import VideoDriver
+ from aqt.qt import *
+@@ -217,8 +216,6 @@ def setup_network(self) -> None:
+         self.update_login_status()
+         qconnect(self.form.syncLogout.clicked, self.sync_logout)
+         qconnect(self.form.syncLogin.clicked, self.sync_login)
+-        qconnect(self.form.syncAnkiHubLogout.clicked, self.ankihub_sync_logout)
+-        qconnect(self.form.syncAnkiHubLogin.clicked, self.ankihub_sync_login)
+ 
+     def update_login_status(self) -> None:
+         assert self.prof is not None
+@@ -231,15 +228,6 @@ def update_login_status(self) -> None:
+             self.form.syncLogin.setVisible(False)
+             self.form.syncLogout.setVisible(True)
+ 
+-        if not self.mw.pm.ankihub_token():
+-            self.form.syncAnkiHubUser.setText(tr.preferences_ankihub_intro())
+-            self.form.syncAnkiHubLogin.setVisible(True)
+-            self.form.syncAnkiHubLogout.setVisible(False)
+-        else:
+-            self.form.syncAnkiHubUser.setText(self.mw.pm.ankihub_username())
+-            self.form.syncAnkiHubLogin.setVisible(False)
+-            self.form.syncAnkiHubLogout.setVisible(True)
+-
+     def on_media_log(self) -> None:
+         self.mw.media_syncer.show_sync_log()
+ 
+@@ -261,19 +249,6 @@ def sync_logout(self) -> None:
+         self.mw.col.media.force_resync()
+         self.update_login_status()
+ 
+-    def ankihub_sync_login(self) -> None:
+-        def on_success():
+-            if self.mw.pm.ankihub_token():
+-                self.update_login_status()
+-
+-        ankihub_login(self.mw, on_success)
+-
+-    def ankihub_sync_logout(self) -> None:
+-        ankihub_token = self.mw.pm.ankihub_token()
+-        if ankihub_token is None:
+-            return
+-        ankihub_logout(self.mw, self.update_login_status, ankihub_token)
+-
+     def confirm_sync_after_login(self) -> None:
+         from aqt import mw
+ 
+diff --git a/qt/aqt/profiles.py b/qt/aqt/profiles.py
+index 817e0013969..8450232c073 100644
+--- a/qt/aqt/profiles.py
++++ b/qt/aqt/profiles.py
+@@ -724,15 +724,3 @@ def set_network_timeout(self, timeout_secs: int) -> None:
+ 
+     def network_timeout(self) -> int:
+         return self.profile.get("networkTimeout") or 60
+-
+-    def set_ankihub_token(self, val: str | None) -> None:
+-        self.profile["thirdPartyAnkiHubToken"] = val
+-
+-    def ankihub_token(self) -> str | None:
+-        return self.profile.get("thirdPartyAnkiHubToken")
+-
+-    def set_ankihub_username(self, val: str | None) -> None:
+-        self.profile["thirdPartyAnkiHubUsername"] = val
+-
+-    def ankihub_username(self) -> str | None:
+-        return self.profile.get("thirdPartyAnkiHubUsername")
+diff --git a/rslib/proto/python.rs b/rslib/proto/python.rs
+index 0ca2c15eabd..b20b850a40e 100644
+--- a/rslib/proto/python.rs
++++ b/rslib/proto/python.rs
+@@ -249,7 +249,6 @@ import anki.search_pb2
+ import anki.stats_pb2
+ import anki.sync_pb2
+ import anki.tags_pb2
+-import anki.ankihub_pb2
+ 
+ class RustBackendGenerated:
+     def _run_command(self, service: int, method: int, input: Any) -> bytes:
+diff --git a/rslib/proto/src/lib.rs b/rslib/proto/src/lib.rs
+index 86d7d158008..85cd528cf77 100644
+--- a/rslib/proto/src/lib.rs
++++ b/rslib/proto/src/lib.rs
+@@ -36,4 +36,3 @@ protobuf!(search, "search");
+ protobuf!(stats, "stats");
+ protobuf!(sync, "sync");
+ protobuf!(tags, "tags");
+-protobuf!(ankihub, "ankihub");
+diff --git a/rslib/src/ankihub/mod.rs b/rslib/src/ankihub/mod.rs
+deleted file mode 100644
+index 0a06c553329..00000000000
+--- a/rslib/src/ankihub/mod.rs
++++ /dev/null
+@@ -1,5 +0,0 @@
+-// Copyright: Ankitects Pty Ltd and contributors
+-// License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
+-
+-pub mod http_client;
+-pub mod login;
+diff --git a/rslib/src/backend/ankihub.rs b/rslib/src/backend/ankihub.rs
+deleted file mode 100644
+index e48e35e59f2..00000000000
+--- a/rslib/src/backend/ankihub.rs
++++ /dev/null
+@@ -1,34 +0,0 @@
+-// Copyright: Ankitects Pty Ltd and contributors
+-// License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
+-
+-use super::Backend;
+-use crate::ankihub::login::ankihub_login;
+-use crate::ankihub::login::ankihub_logout;
+-use crate::ankihub::login::LoginResponse;
+-use crate::prelude::*;
+-
+-impl From<LoginResponse> for anki_proto::ankihub::LoginResponse {
+-    fn from(value: LoginResponse) -> Self {
+-        anki_proto::ankihub::LoginResponse {
+-            token: value.token.unwrap_or_default(),
+-        }
+-    }
+-}
+-
+-impl crate::services::BackendAnkiHubService for Backend {
+-    fn ankihub_login(
+-        &self,
+-        input: anki_proto::ankihub::LoginRequest,
+-    ) -> Result<anki_proto::ankihub::LoginResponse> {
+-        let rt = self.runtime_handle();
+-        let fut = ankihub_login(input.id, input.password, self.web_client());
+-
+-        rt.block_on(fut).map(|a| a.into())
+-    }
+-
+-    fn ankihub_logout(&self, input: anki_proto::ankihub::LogoutRequest) -> Result<()> {
+-        let rt = self.runtime_handle();
+-        let fut = ankihub_logout(input.token, self.web_client());
+-        rt.block_on(fut)
+-    }
+-}
+diff --git a/rslib/src/backend/mod.rs b/rslib/src/backend/mod.rs
+index 42260b1500b..f92f8b49880 100644
+--- a/rslib/src/backend/mod.rs
++++ b/rslib/src/backend/mod.rs
+@@ -3,7 +3,6 @@
+ 
+ mod adding;
+ mod ankidroid;
+-mod ankihub;
+ mod ankiweb;
+ mod card_rendering;
+ mod collection;
+diff --git a/rslib/src/lib.rs b/rslib/src/lib.rs
+index 2258c359280..83b44c1a3e8 100644
+--- a/rslib/src/lib.rs
++++ b/rslib/src/lib.rs
+@@ -5,7 +5,6 @@
+ 
+ pub mod adding;
+ pub(crate) mod ankidroid;
+-pub mod ankihub;
+ pub mod backend;
+ pub mod browser_table;
+ pub mod card;

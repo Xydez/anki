@@ -5,6 +5,7 @@
 # Contributor: Timm Preetz <timm@preetz.us>
 # Contributor: Michael 'manveru' Fellinger <m.fellinger@gmail.com>
 # Contributor: Dave Pretty <david dot pretty at gmail dot com>
+# Contributor: Xydez <thexydez@gmail.com>
 
 # anki -> git rev-parse --short=8 $pkgver
 # ftl -> git submodule
@@ -75,6 +76,7 @@ source=("$pkgname-$pkgver.tar.gz::https://github.com/ankitects/anki/archive/refs
         "strip-formatter-deps.patch"
         "strip-type-checking-deps.patch"
         "strip-python-pip-system-certs.patch"
+        "strip-ankihub.patch"
 )
 sha256sums=(4c9b5d272240b76fa052760071c89d0eca5202dfd678a9464505ab99b121c868
             65ea76e3e876dcf1feb9882f36ff0a1d86b9a1369fef5915eb17a5f26fd7c6fe
@@ -83,6 +85,7 @@ sha256sums=(4c9b5d272240b76fa052760071c89d0eca5202dfd678a9464505ab99b121c868
             9858fefa254812980d252b29fc6f32bd19bb83ee7e5a96d72c707626ed5193a7
             198bc2ec14439e3ba41a03c4823f07df4b0c559c1dcbdaf678416ed12a720c2e
             2506cf9d5b0c47a2c519ec4bb0ef87e7921dca8db5cae39b0dae265d01e253b3
+            dc1b68cfbd57574b868b9214397d8db602b2456b4338df2db84de26d8644bfa8
 )
 
 prepare() {
@@ -92,6 +95,7 @@ prepare() {
     patch -p1 < "$srcdir/strip-formatter-deps.patch"
     patch -p1 < "$srcdir/strip-type-checking-deps.patch"
     patch -p1 < "$srcdir/strip-python-pip-system-certs.patch"
+    patch -p1 < "$srcdir/strip-ankihub.patch"
     sed -i 's/opt-level = 1$/opt-level= 3/' Cargo.toml	# optimize more
     sed -i 's/channel = "[0-9\.]*"$/channel = "stable"/' rust-toolchain.toml # use most recent stable rust toolchain
     # Build process wants .git/HEAD to be present. Workaround to be able to use tarballs
